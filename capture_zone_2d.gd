@@ -12,8 +12,8 @@ class_name CaptureZone2D
 ##
 ## Levels of detail: `pixels_per_unit` is the maximum quality (the finest level); `lod_levels` adds smaller
 ## versions below it, each half the resolution of the previous one, and levels whose whole image would be
-## shorter than `min_level_pixels` are dropped. Every level is split into tiles so that no PNG exceeds
-## `max_tile_pixels`. For a hand-placed detail area inside a bigger box, add a second CaptureZone2D with a
+## shorter than `min_level_pixels` are dropped. Every level is cut into tiles of one constant size,
+## `tile_pixels`, so a finer level replaces one tile with four and every tile costs the same to load. For a hand-placed detail area inside a bigger box, add a second CaptureZone2D with a
 ## higher `pixels_per_unit`.
 ##
 ## The scene tree is paused while capturing so all tiles show the same moment of the game.
@@ -62,8 +62,10 @@ static var _frozen_tree: SceneTree = null
 ## pixels, so 1 is native resolution.
 @export_range(0.1, 64.0, 0.1, "or_greater") var pixels_per_unit: float = 1.0
 
-## Largest edge of any exported PNG. Bigger areas are split into a grid of tiles.
-@export_range(64, 16384) var max_tile_pixels: int = 4096
+## Pixel size of every tile of every level. Each level is cut into tiles this big, anchored at the box's
+## top-left corner, so a finer level replaces one tile with four. Tiles on the right/bottom edge and levels
+## smaller than one tile are cropped.
+@export_range(64, 16384) var tile_pixels: int = 1024
 
 @export_group("Rendering")
 
@@ -137,7 +139,7 @@ func _capture_boxes() -> void:
 	if not DirAccess.dir_exists_absolute(output_directory):
 		DirAccess.make_dir_recursive_absolute(output_directory)
 
-	var max_tile: int = clampi(max_tile_pixels, 64, 16384)
+	var tile_px: int = clampi(tile_pixels, 64, 16384)
 	var prefix: String = filename if filename != "" else name
 	var boxes: Array = []
 	var used_ids: Dictionary = {}
@@ -149,7 +151,7 @@ func _capture_boxes() -> void:
 
 		var geometry: Dictionary = _box_from_shape(collision_shape)
 		var size: Vector2 = geometry["size"]
-		var tiles: Array[Dictionary] = CapturePlan.plan_face(size, pixels_per_unit, lod_levels, min_level_pixels, max_tile)
+		var tiles: Array[Dictionary] = CapturePlan.plan_face(size, pixels_per_unit, lod_levels, min_level_pixels, tile_px)
 		if tiles.is_empty():
 			push_warning("CaptureZone2D: '%s' has no area and was skipped." % collision_shape.name)
 			continue
@@ -158,7 +160,7 @@ func _capture_boxes() -> void:
 		var box: Dictionary = MetadataWriter.make_box(id, geometry["center"], geometry["rotation"], size)
 
 		var level_images: Dictionary = {} # level -> Array of image entries, in tile order
-		var level_info: Dictionary = {} # level -> {pixels_per_unit, grid}
+		var level_info: Dictionary = {} # level -> {pixels_per_unit, grid, tile_pixels}
 		var failed: bool = false
 
 		for tile: Dictionary in tiles:
@@ -187,7 +189,7 @@ func _capture_boxes() -> void:
 			var level: int = tile["level"]
 			if not level_images.has(level):
 				level_images[level] = []
-				level_info[level] = {"pixels_per_unit": tile["pixels_per_unit"], "grid": Vector2i(tile["cols"], tile["rows"])}
+				level_info[level] = {"pixels_per_unit": tile["pixels_per_unit"], "grid": Vector2i(tile["cols"], tile["rows"]), "tile_pixels": tile["tile_pixels"]}
 			(level_images[level] as Array).append(MetadataWriter.image_entry(tile["col"], tile["row"], tile_name, pixel_size))
 
 		if failed:
@@ -195,7 +197,7 @@ func _capture_boxes() -> void:
 
 		for level: int in level_images:
 			var info: Dictionary = level_info[level]
-			MetadataWriter.add_lod(box, MetadataWriter.FACE_2D, level, info["pixels_per_unit"], info["grid"], level_images[level])
+			MetadataWriter.add_lod(box, MetadataWriter.FACE_2D, level, info["pixels_per_unit"], info["grid"], level_images[level], info["tile_pixels"])
 		boxes.append(box)
 		print("[CaptureZone2D] '%s': saved %d tile(s) for box '%s'" % [name, tiles.size(), id])
 

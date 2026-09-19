@@ -35,14 +35,26 @@ func same_ppus(actual: Array[float], expected: Array) -> bool:
 
 func _init() -> void:
 	# ── grid / plan ──────────────────────────────────────────────────────
-	check(Plan.grid_for(Vector2(100, 50), 2.0, 200) == Vector2i(1, 1), "grid 100x50 @2 max200 = 1x1")
-	check(Plan.grid_for(Vector2(100, 50), 4.0, 200) == Vector2i(2, 1), "grid @4 = 2x1")
-	check(Plan.grid_for(Vector2(100, 50), 8.0, 200) == Vector2i(4, 2), "grid @8 = 4x2")
+	check(Plan.grid_for(Vector2i(200, 100), 200) == Vector2i(1, 1), "grid 200x100 px in 200 px tiles = 1x1")
+	check(Plan.grid_for(Vector2i(400, 200), 200) == Vector2i(2, 1), "grid 400x200 = 2x1")
+	check(Plan.grid_for(Vector2i(800, 400), 200) == Vector2i(4, 2), "grid 800x400 = 4x2")
+	check(Plan.grid_for(Vector2i(801, 400), 200) == Vector2i(5, 2), "a single extra pixel needs another tile")
+	check(Plan.finest_pixels(Vector2(12.5, 4.0), 16.0) == Vector2i(200, 64), "finest size, exact products are not bumped by float noise")
+	check(Plan.finest_pixels(Vector2(10.01, 1.0), 10.0) == Vector2i(101, 10), "finest size is rounded up so the image covers the box")
+	check(Plan.level_pixels(Vector2i(801, 400), 1) == Vector2i(401, 200), "one level down: halved and rounded up")
+	check(Plan.level_pixels(Vector2i(801, 400), 2) == Vector2i(201, 100), "two levels down: still derived from the finest")
 	check(Plan.count_tiles(Vector2(100, 50), 8.0, 3, 0, 200) == 11, "Overview has 1+2+8 tiles")
 
 	var detail: Array[Dictionary] = Plan.plan_face(Vector2(30, 15), 16.0, 1, 0, 200)
 	check(detail.size() == 6, "Detail 30x15 @16 = 3x2 tiles")
-	check(detail[0]["pixel_size"] == Vector2i(160, 120), "Detail tile is 160x120 px")
+	check(detail[0]["pixel_size"] == Vector2i(200, 200), "Detail tile 0,0 is a full 200x200 px tile")
+	check(detail[2]["pixel_size"] == Vector2i(80, 200) and detail[3]["pixel_size"] == Vector2i(200, 40), "...the last column is cropped to 80 px, the last row to 40 px")
+	check(detail[0]["tile_pixels"] == 200, "the nominal tile size is recorded")
+	var corner: Dictionary = detail[5] # column 2, row 1: 5 x 2.5 units at the box's bottom-right
+	check(near(corner["tile_size"].x, 5.0) and near(corner["tile_size"].y, 2.5), "cropped tile covers 5 x 2.5 units")
+	check(near(corner["offset"].x, 12.5) and near(corner["offset"].y, -6.25), "cropped corner tile centre (12.5, -6.25)")
+	var small: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 4.0, 1, 0, 1024)  # 80x40 px: smaller than one tile
+	check(small.size() == 1 and small[0]["pixel_size"] == Vector2i(80, 40) and small[0]["tile_pixels"] == 1024, "a level smaller than one tile is one cropped tile")
 	check(detail[0]["level"] == 0, "a single level is tagged 0 (tags are per box)")
 
 	var quad: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 10.0, 1, 0, 50)  # 200x100 px, max 50 => 4x2
@@ -81,6 +93,40 @@ func _init() -> void:
 	check(dropped_top == 2, "tags renumbered from 0 after dropping")
 	check(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 99, 0).size() == Plan.MAX_LOD_LEVELS, "level count clamped to MAX_LOD_LEVELS")
 	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 0, 0), [100.0]), "level count < 1 treated as 1")
+
+	# Constant tile size: every tile but the last column/row is exactly tile_pixels, and every tile lies inside
+	# the tile (col/2, row/2) of the level below it
+	var nest_rng := RandomNumberGenerator.new()
+	nest_rng.seed = 7
+	var not_constant: int = 0
+	var not_nested: int = 0
+	for n in 300:
+		var nsize := Vector2(nest_rng.randf_range(1.0, 150.0), nest_rng.randf_range(1.0, 150.0))
+		var nppu: float = nest_rng.randf_range(1.0, 30.0)
+		var ntile: int = [64, 200, 512][nest_rng.randi() % 3]
+		var ntiles: Array[Dictionary] = Plan.plan_face(nsize, nppu, nest_rng.randi_range(2, 5), 0, ntile)
+		var lookup: Dictionary = {}
+		for t: Dictionary in ntiles:
+			lookup[Vector3i(t["level"], t["col"], t["row"])] = t
+		for t: Dictionary in ntiles:
+			var px: Vector2i = t["pixel_size"]
+			if (t["col"] < t["cols"] - 1 and px.x != ntile) or (t["row"] < t["rows"] - 1 and px.y != ntile) or px.x > ntile or px.y > ntile:
+				not_constant += 1
+			if t["level"] == 0:
+				continue
+			var parent: Variant = lookup.get(Vector3i(t["level"] - 1, t["col"] / 2, t["row"] / 2))
+			if parent == null:
+				not_nested += 1
+				continue
+			var c_min: Vector2 = t["offset"] - t["tile_size"] / 2.0
+			var c_max: Vector2 = t["offset"] + t["tile_size"] / 2.0
+			var p_min: Vector2 = parent["offset"] - parent["tile_size"] / 2.0
+			var p_max: Vector2 = parent["offset"] + parent["tile_size"] / 2.0
+			var slack: float = 1e-3
+			if c_min.x < p_min.x - slack or c_min.y < p_min.y - slack or c_max.x > p_max.x + slack or c_max.y > p_max.y + slack:
+				not_nested += 1
+	check(not_constant == 0, "every tile but the last column/row is exactly the tile size (300 random boxes, got %d)" % not_constant)
+	check(not_nested == 0, "every tile lies inside the tile (col/2, row/2) of the level below (300 random boxes, got %d)" % not_nested)
 
 	# CountTiles must agree with PlanFace
 	var rng := RandomNumberGenerator.new()
@@ -133,7 +179,7 @@ func _init() -> void:
 				t["col"], t["row"], "%s_Front_L%d_%dx%d.png" % [id, tag, t["col"], t["row"]], t["pixel_size"]))
 		for level: int in by_level:
 			var info: Dictionary = by_level[level]["info"]
-			Writer.add_lod(built, "Front", level, info["pixels_per_unit"], Vector2i(info["cols"], info["rows"]), by_level[level]["images"])
+			Writer.add_lod(built, "Front", level, info["pixels_per_unit"], Vector2i(info["cols"], info["rows"]), by_level[level]["images"], info["tile_pixels"])
 		Writer.merge_boxes(doc, [built])
 
 	var out: Dictionary = JSON.parse_string(Writer.to_json(doc))

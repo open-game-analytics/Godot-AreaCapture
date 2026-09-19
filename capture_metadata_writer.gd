@@ -43,18 +43,23 @@ static func make_box(id: String, godot_center: Vector2, godot_rotation: float, s
 	}
 
 
-## Append one LoD level (its tiles) to a box's face.
-static func add_lod(box: Dictionary, face: String, level: int, pixels_per_unit: float, grid: Vector2i, images: Array) -> void:
+## Append one LoD level (its tiles) to a box's face. `tile_pixels` is the pixel size of a full tile (written as
+## `tile_size`): tiles are then anchored at the top-left corner and cropped at the right/bottom edge. 0 leaves it
+## out, meaning the box is divided evenly into `grid` tiles.
+static func add_lod(box: Dictionary, face: String, level: int, pixels_per_unit: float, grid: Vector2i, images: Array, tile_pixels: int = 0) -> void:
 	var faces: Dictionary = box["faces"]
 	if not faces.has(face):
 		faces[face] = {"lods": []}
 	var lods: Array = faces[face]["lods"]
-	lods.append({
+	var lod: Dictionary = {
 		"level": level,
 		"pixels_per_unit": _snap(pixels_per_unit, _VECTOR_STEP),
 		"grid": [grid.x, grid.y],
-		"images": images,
-	})
+	}
+	if tile_pixels > 0:
+		lod["tile_size"] = [tile_pixels, tile_pixels]
+	lod["images"] = images
+	lods.append(lod)
 
 
 static func image_entry(col: int, row: int, filename: String, pixel_size: Vector2i) -> Dictionary:
