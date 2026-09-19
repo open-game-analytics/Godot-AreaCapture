@@ -24,17 +24,26 @@ func near(a: float, b: float, tol: float = 1e-4) -> bool:
 	return absf(a - b) <= tol
 
 
+func same_ppus(actual: Array[float], expected: Array) -> bool:
+	if actual.size() != expected.size():
+		return false
+	for i in actual.size():
+		if not near(actual[i], expected[i]):
+			return false
+	return true
+
+
 func _init() -> void:
 	# ── grid / plan ──────────────────────────────────────────────────────
 	check(Plan.grid_for(Vector2(100, 50), 2.0, 200) == Vector2i(1, 1), "grid 100x50 @2 max200 = 1x1")
 	check(Plan.grid_for(Vector2(100, 50), 4.0, 200) == Vector2i(2, 1), "grid @4 = 2x1")
 	check(Plan.grid_for(Vector2(100, 50), 8.0, 200) == Vector2i(4, 2), "grid @8 = 4x2")
-	check(Plan.count_tiles(Vector2(100, 50), 2.0, 3, 200) == 11, "Overview has 1+2+8 tiles")
+	check(Plan.count_tiles(Vector2(100, 50), 8.0, 3, 0, 200) == 11, "Overview has 1+2+8 tiles")
 
-	var detail: Array[Dictionary] = Plan.plan_face(Vector2(30, 15), 16.0, 1, 3, 200)
+	var detail: Array[Dictionary] = Plan.plan_face(Vector2(30, 15), 16.0, 1, 0, 200)
 	check(detail.size() == 6, "Detail 30x15 @16 = 3x2 tiles")
 	check(detail[0]["pixel_size"] == Vector2i(160, 120), "Detail tile is 160x120 px")
-	check(detail[0]["level"] == 3, "first_level tag applied")
+	check(detail[0]["level"] == 0, "a single level is tagged 0 (tags are per box)")
 
 	var quad: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 10.0, 1, 0, 50)  # 200x100 px, max 50 => 4x2
 	check(quad.size() == 8, "20x10 @10 max50 = 4x2")
@@ -49,6 +58,30 @@ func _init() -> void:
 	var big: Array[Dictionary] = Plan.plan_face(Vector2(1000, 1000), 100.0, 1, 0, 4096)
 	check(big.size() == 625, "huge box is tiled 25x25 instead of failing")
 
+	# ── LoD ladder: ppu is the max quality, levels degrade down from it ──
+	var ladder: Array[float] = Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 4, 0)
+	check(same_ppus(ladder, [12.5, 25.0, 50.0, 100.0]), "4 levels @100 => 12.5/25/50/100 coarsest first (got %s)" % str(ladder))
+	var ladder_tiles: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 100.0, 4, 0, 4096)
+	var level_ppu: Dictionary = {}
+	var top_ppu: float = 0.0
+	for t in ladder_tiles:
+		level_ppu[t["level"]] = t["pixels_per_unit"]
+		top_ppu = maxf(top_ppu, t["pixels_per_unit"])
+	check(level_ppu.size() == 4 and near(level_ppu[0], 12.5) and near(level_ppu[3], 100.0), "tags 0..3, L0 coarsest, top tag = max ppu")
+	check(top_ppu <= 100.0, "no level is rendered above the requested ppu")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 1.0, 1, 0), [1.0]), "single level = only the max")
+	# min pixels: longest edge 20 units => 2000/1000/500/250 px at 100/50/25/12.5 ppu
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 4, 256), [25.0, 50.0, 100.0]), "250 px level dropped at min 256")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 4, 250), [12.5, 25.0, 50.0, 100.0]), "level exactly at the min is kept")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(0.5, 0.5), 100.0, 4, 256), [100.0]), "max level kept even when below the min")
+	var dropped: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 100.0, 4, 256, 4096)
+	var dropped_top: int = 0
+	for t in dropped:
+		dropped_top = maxi(dropped_top, t["level"])
+	check(dropped_top == 2, "tags renumbered from 0 after dropping")
+	check(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 99, 0).size() == Plan.MAX_LOD_LEVELS, "level count clamped to MAX_LOD_LEVELS")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 0, 0), [100.0]), "level count < 1 treated as 1")
+
 	# CountTiles must agree with PlanFace
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 42
@@ -58,7 +91,8 @@ func _init() -> void:
 		var ppu: float = rng.randf_range(0.5, 20.0)
 		var levels: int = rng.randi_range(1, 3)
 		var max_tile: int = [200, 512, 4096, 8192][rng.randi() % 4]
-		if Plan.count_tiles(size, ppu, levels, max_tile) != Plan.plan_face(size, ppu, levels, 0, max_tile).size():
+		var min_px: int = [0, 64, 256, 1000][rng.randi() % 4]
+		if Plan.count_tiles(size, ppu, levels, min_px, max_tile) != Plan.plan_face(size, ppu, levels, min_px, max_tile).size():
 			mismatches += 1
 	check(mismatches == 0, "count_tiles == plan_face size (mismatches=%d)" % mismatches)
 
@@ -78,22 +112,25 @@ func _init() -> void:
 	check(demo.get("schema_version") == 2, "demo loads")
 	# same inputs generate-demo.mjs used, expressed the Godot way (y down, clockwise rotation)
 	var specs: Dictionary = {
-		"Overview": {"pos": Vector2(0, 0), "rot": 0.0, "size": Vector2(100, 50), "levels": 3, "first": 0, "ppu": 2.0},
-		"Detail": {"pos": Vector2(20, -10), "rot": -deg_to_rad(30.0), "size": Vector2(30, 15), "levels": 1, "first": 3, "ppu": 16.0},
-		"Corner": {"pos": Vector2(-30, 10), "rot": 0.0, "size": Vector2(20, 10), "levels": 1, "first": 2, "ppu": 8.0},
+		"Overview": {"pos": Vector2(0, 0), "rot": 0.0, "size": Vector2(100, 50), "levels": 3, "tag_offset": 0, "max_ppu": 8.0},
+		"Detail": {"pos": Vector2(20, -10), "rot": -deg_to_rad(30.0), "size": Vector2(30, 15), "levels": 1, "tag_offset": 3, "max_ppu": 16.0},
+		"Corner": {"pos": Vector2(-30, 10), "rot": 0.0, "size": Vector2(20, 10), "levels": 1, "tag_offset": 2, "max_ppu": 8.0},
 	}
 	var doc: Dictionary = Writer.make_document("lod-demo")
 	for demo_box: Dictionary in demo["boxes"]:
 		var id: String = demo_box["id"]
 		var s: Dictionary = specs[id]
 		var built: Dictionary = Writer.make_box(id, s["pos"], s["rot"], s["size"])
-		var tiles: Array[Dictionary] = Plan.plan_face(s["size"], s["ppu"], s["levels"], s["first"], 200)
+		var tiles: Array[Dictionary] = Plan.plan_face(s["size"], s["max_ppu"], s["levels"], 0, 200)
+		# The planner tags levels per box from 0; the fixture gives hand-placed detail boxes a higher global tag,
+		# which the exporters no longer write, so it is added here to keep comparing grids and pixel sizes exactly.
 		var by_level: Dictionary = {}
 		for t: Dictionary in tiles:
-			if not by_level.has(t["level"]):
-				by_level[t["level"]] = {"info": t, "images": []}
-			(by_level[t["level"]]["images"] as Array).append(Writer.image_entry(
-				t["col"], t["row"], "%s_Front_L%d_%dx%d.png" % [id, t["level"], t["col"], t["row"]], t["pixel_size"]))
+			var tag: int = t["level"] + s["tag_offset"]
+			if not by_level.has(tag):
+				by_level[tag] = {"info": t, "images": []}
+			(by_level[tag]["images"] as Array).append(Writer.image_entry(
+				t["col"], t["row"], "%s_Front_L%d_%dx%d.png" % [id, tag, t["col"], t["row"]], t["pixel_size"]))
 		for level: int in by_level:
 			var info: Dictionary = by_level[level]["info"]
 			Writer.add_lod(built, "Front", level, info["pixels_per_unit"], Vector2i(info["cols"], info["rows"]), by_level[level]["images"])

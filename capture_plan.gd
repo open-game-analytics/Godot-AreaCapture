@@ -9,8 +9,14 @@ extends RefCounted
 ## Largest PNG edge a tile may have unless the zone says otherwise.
 const DEFAULT_MAX_TILE_PIXELS: int = 4096
 
-## More levels than this would exceed any texture limit at 2^n pixels per unit.
+## More levels than this (each halves the resolution) would be below any useful size.
 const MAX_LOD_LEVELS: int = 8
+
+## Default number of LoD levels per box.
+const DEFAULT_LOD_LEVELS: int = 4
+
+## Default for the smallest image edge a degraded level may have; smaller levels are dropped.
+const DEFAULT_MIN_LEVEL_PIXELS: int = 256
 
 const _GRID_EPSILON: float = 1e-6
 
@@ -22,33 +28,51 @@ static func grid_for(size: Vector2, pixels_per_unit: float, max_tile_pixels: int
 	return Vector2i(cols, rows)
 
 
+## Pixels per unit of every LoD level of a box of `size` world units, coarsest first, so the array
+## index is the level tag. The finest level is `max_pixels_per_unit`; each further level halves it.
+## A degraded level whose whole image would be shorter than `min_level_pixels` on its longest edge is
+## dropped; the finest level is always kept.
+static func level_pixels_per_unit(size: Vector2, max_pixels_per_unit: float, level_count: int, min_level_pixels: int) -> Array[float]:
+	var ppus: Array[float] = []
+	var longest_units: float = maxf(size.x, size.y)
+	for i in clampi(level_count, 1, MAX_LOD_LEVELS):
+		var ppu: float = max_pixels_per_unit / pow(2.0, i)
+		if i > 0 and longest_units * ppu < min_level_pixels:
+			break # only gets smaller from here
+		ppus.append(ppu)
+	ppus.reverse()
+	return ppus
+
+
 ## Number of tiles plan_face() would produce, without building them.
-static func count_tiles(size: Vector2, base_pixels_per_unit: float, level_count: int, max_tile_pixels: int) -> int:
-	if base_pixels_per_unit <= 0.0 or max_tile_pixels < 1:
+static func count_tiles(size: Vector2, max_pixels_per_unit: float, level_count: int, min_level_pixels: int, max_tile_pixels: int) -> int:
+	if max_pixels_per_unit <= 0.0 or max_tile_pixels < 1:
 		return 0
 	var total: int = 0
-	for i in clampi(level_count, 1, MAX_LOD_LEVELS):
-		var grid: Vector2i = grid_for(size, base_pixels_per_unit * pow(2.0, i), max_tile_pixels)
+	for ppu in level_pixels_per_unit(size, max_pixels_per_unit, level_count, min_level_pixels):
+		var grid: Vector2i = grid_for(size, ppu, max_tile_pixels)
 		total += grid.x * grid.y
 	return total
 
 
 ## Every tile of every LoD level of a box of `size` world units.
 ##
-## Level i renders at base_pixels_per_unit * 2^i and is tagged first_level + i. Order: level, row, column.
-## Each entry is a Dictionary:
+## `max_pixels_per_unit` is the finest level's resolution; see level_pixels_per_unit() for the coarser
+## ones. Levels are tagged from 0 (coarsest) upward, so a higher tag is always more detail.
+## Order: level, row, column. Each entry is a Dictionary:
 ##   level: int, col: int, row: int, cols: int, rows: int, pixels_per_unit: float,
 ##   tile_size: Vector2   world units covered by the tile
 ##   offset: Vector2      tile centre relative to the box centre: x along the image's right, y along its up
 ##   pixel_size: Vector2i PNG size
-static func plan_face(size: Vector2, base_pixels_per_unit: float, level_count: int, first_level: int, max_tile_pixels: int) -> Array[Dictionary]:
+static func plan_face(size: Vector2, max_pixels_per_unit: float, level_count: int, min_level_pixels: int, max_tile_pixels: int) -> Array[Dictionary]:
 	var tiles: Array[Dictionary] = []
-	if base_pixels_per_unit <= 0.0 or max_tile_pixels < 1 or size.x <= 0.0 or size.y <= 0.0:
+	if max_pixels_per_unit <= 0.0 or max_tile_pixels < 1 or size.x <= 0.0 or size.y <= 0.0:
 		push_error("CapturePlan: pixels per unit, tile size and box size must be positive.")
 		return tiles
 
-	for i in clampi(level_count, 1, MAX_LOD_LEVELS):
-		var ppu: float = base_pixels_per_unit * pow(2.0, i)
+	var level_ppus: Array[float] = level_pixels_per_unit(size, max_pixels_per_unit, level_count, min_level_pixels)
+	for level in level_ppus.size():
+		var ppu: float = level_ppus[level]
 		var grid: Vector2i = grid_for(size, ppu, max_tile_pixels)
 		var tile_size := Vector2(size.x / grid.x, size.y / grid.y)
 		var pixel_size := Vector2i(maxi(1, roundi(tile_size.x * ppu)), maxi(1, roundi(tile_size.y * ppu)))
@@ -56,7 +80,7 @@ static func plan_face(size: Vector2, base_pixels_per_unit: float, level_count: i
 		for row in grid.y:
 			for col in grid.x:
 				tiles.append({
-					"level": first_level + i,
+					"level": level,
 					"col": col,
 					"row": row,
 					"cols": grid.x,

@@ -13,15 +13,15 @@ An `Area2D` whose child `CollisionShape2D`s are the capture boxes. Boxes can be 
 | `filename` | Prefix of box ids and image names: `<filename>_<shape name>`. |
 | `metadata_filename` | Metadata file; zones that share it merge into it, so an overview and its detail zones end up together. |
 | `scenario` | Scenario name stored in the metadata. |
-| `lod_levels` | Levels of detail to export. Level *i* renders at `pixels_per_unit × 2^i`. |
-| `first_level` | LoD tag of the first level. `0` for an overview; higher for a detail zone drawn on top when zoomed in. |
-| `pixels_per_unit` | Pixels per world unit at the first level (Godot 2D units are pixels, so `1` = native). |
+| `pixels_per_unit` | **Maximum quality**: pixels per world unit of the finest level (Godot 2D units are pixels, so `1` = native). |
+| `lod_levels` | Levels of detail to export (default 4). The finest is `pixels_per_unit`; each further level is half the resolution of the previous one. |
+| `min_level_pixels` | Degraded levels whose whole image would be shorter than this (longest edge, px) are skipped (default 256); the finest level is always exported. |
 | `max_tile_pixels` | Largest PNG edge. Bigger areas are tiled instead of failing. |
 | `render_layers` | Visibility layers included in the capture; move e.g. the player to another layer and untick it to leave it out. |
 
 ### Capturing
 
-The game must run with a real renderer (`--headless` has none). From the command line, nothing is written into the scene:
+The game must run with a real renderer (`--headless` has none). While capturing, the scene tree is paused so all tiles show the same moment of the game (nodes with `process_mode` `Always`/`Disabled` and shader `TIME` are not affected). From the command line, nothing is written into the scene:
 
 ```bash
 godot --path . -- --capture-areas     # captures all CaptureZone2D nodes, then quits
@@ -29,8 +29,8 @@ godot --path . -- --capture-areas     # captures all CaptureZone2D nodes, then q
 
 ### Levels of detail
 
-- **Auto-subdivision:** set `lod_levels` > 1 on a zone. Each level doubles the resolution and the tile grid grows with it.
-- **Manual detail box:** add a second `CaptureZone2D` with `lod_levels = 1`, a higher `first_level` and `pixels_per_unit`, and a box over the area of interest, using the same `metadata_filename`.
+- **Max quality first:** `pixels_per_unit` is the resolution you want at best; `lod_levels` adds smaller versions below it (4 levels at 1 ppu are 0.125 / 0.25 / 0.5 / 1). Levels are tagged `L0` (coarsest) upward, and each is tiled as needed. Levels that would be smaller than `min_level_pixels` are dropped, so small boxes get fewer levels.
+- **Manual detail box:** add a second `CaptureZone2D` with a higher `pixels_per_unit` and a box over the area of interest, using the same `metadata_filename`. Level tags are per box (every box starts at `L0`).
 
 ### Output
 

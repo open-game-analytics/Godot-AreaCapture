@@ -10,9 +10,13 @@ class_name CaptureZone2D
 ## The game must run with a real renderer for the capture to work (SubViewport rendering needs an
 ## active render loop; --headless has none).
 ##
-## Levels of detail: level i renders at `pixels_per_unit` * 2^i and is split into tiles so that no PNG
-## exceeds `max_tile_pixels`. For a hand-placed detail area inside a bigger box, add a second
-## CaptureZone2D with a higher `first_level` and `pixels_per_unit`; viewers draw it on top when zoomed in.
+## Levels of detail: `pixels_per_unit` is the maximum quality (the finest level); `lod_levels` adds smaller
+## versions below it, each half the resolution of the previous one, and levels whose whole image would be
+## shorter than `min_level_pixels` are dropped. Every level is split into tiles so that no PNG exceeds
+## `max_tile_pixels`. For a hand-placed detail area inside a bigger box, add a second CaptureZone2D with a
+## higher `pixels_per_unit`.
+##
+## The scene tree is paused while capturing so all tiles show the same moment of the game.
 ## See "Capture Metadata v2" in the dashboard docs.
 
 const CapturePlan := preload("capture_plan.gd")
@@ -20,6 +24,12 @@ const CaptureRenderer := preload("capture_renderer.gd")
 const MetadataWriter := preload("capture_metadata_writer.gd")
 
 const _CLI_ARG: String = "--capture-areas"
+
+## Zones capturing right now (they run concurrently when several start with the game), and the scene
+## tree's paused state from before the first of them froze it.
+static var _freeze_count: int = 0
+static var _paused_before: bool = false
+static var _frozen_tree: SceneTree = null
 
 ## When true, triggers a capture on the next game start. (Set back to false after capturing: the
 ## running game cannot save the change into the scene.)
@@ -40,15 +50,16 @@ const _CLI_ARG: String = "--capture-areas"
 
 @export_group("Levels of detail")
 
-## How many levels of detail to export. Level i is rendered at pixels_per_unit * 2^i.
-@export_range(1, 8) var lod_levels: int = 1
+## How many levels of detail to export. The finest is pixels_per_unit; each further level is half the
+## resolution of the previous one, so a viewer can load smaller images while zoomed out. 1 = only the max.
+@export_range(1, 8) var lod_levels: int = 4
 
-## LoD level tag of this zone's first level. Keep 0 for an overview zone; give a detail zone placed
-## inside a larger one a higher tag (and a higher pixels_per_unit).
-@export_range(0, 16) var first_level: int = 0
+## Degraded levels whose whole image would be shorter than this (longest edge, in pixels) are not
+## exported, so no tiny textures. The maximum quality level is always exported. 0 = no limit.
+@export_range(0, 16384) var min_level_pixels: int = 256
 
-## Image pixels per world unit at the first level. The Godot 2D world is measured in pixels, so 1 is
-## native resolution.
+## Maximum quality: image pixels per world unit of the finest level. The Godot 2D world is measured in
+## pixels, so 1 is native resolution.
 @export_range(0.1, 64.0, 0.1, "or_greater") var pixels_per_unit: float = 1.0
 
 ## Largest edge of any exported PNG. Bigger areas are split into a grid of tiles.
@@ -65,7 +76,8 @@ func _ready() -> void:
 	var from_command_line: bool = _CLI_ARG in OS.get_cmdline_user_args()
 	if recapture or from_command_line:
 		await _run_capture()
-		if from_command_line:
+		# Zones capture concurrently: only the last one to finish may end the game
+		if from_command_line and _freeze_count == 0:
 			get_tree().quit()
 
 
@@ -79,7 +91,7 @@ func capture_content(child: Node2D = null) -> Image:
 		return null
 
 	var box: Dictionary = _box_from_shape(collision_shape)
-	var tiles: Array[Dictionary] = CapturePlan.plan_face(box["size"], pixels_per_unit, 1, first_level, 1 << 30)
+	var tiles: Array[Dictionary] = CapturePlan.plan_face(box["size"], pixels_per_unit, 1, 0, 1 << 30)
 	if tiles.is_empty():
 		push_warning("CaptureZone2D: Capture area is empty or invalid.")
 		return null
@@ -89,9 +101,37 @@ func capture_content(child: Node2D = null) -> Image:
 
 
 ## Captures every child CollisionShape2D as a box (all levels, all tiles) and writes the images and
-## the metadata JSON. Runs when the game starts with recapture=true or --capture-areas.
+## the metadata JSON. Runs when the game starts with recapture=true or --capture-areas. The scene tree
+## is paused meanwhile, so every tile of every level shows the same moment and neighbouring tiles line up.
 func _run_capture() -> void:
 	recapture = false
+	await _freeze_time()
+	await _capture_boxes()
+	_unfreeze_time()
+
+
+## Pauses the scene tree (once, however many zones capture at the same time) and lets the frame settle.
+## Nodes with process_mode ALWAYS/DISABLED are not affected, and shader TIME keeps running.
+func _freeze_time() -> void:
+	var tree: SceneTree = get_tree()
+	if _freeze_count == 0:
+		_frozen_tree = tree
+		_paused_before = tree.paused
+		tree.paused = true
+	_freeze_count += 1
+	await tree.process_frame
+
+
+## Undoes one _freeze_time(); the last zone to finish restores the tree's previous paused state.
+func _unfreeze_time() -> void:
+	_freeze_count -= 1
+	if _freeze_count == 0 and is_instance_valid(_frozen_tree):
+		_frozen_tree.paused = _paused_before
+	if _freeze_count == 0:
+		_frozen_tree = null
+
+
+func _capture_boxes() -> void:
 	print("[CaptureZone2D] '%s': capture started, output='%s'" % [name, output_directory])
 
 	if not DirAccess.dir_exists_absolute(output_directory):
@@ -109,7 +149,7 @@ func _run_capture() -> void:
 
 		var geometry: Dictionary = _box_from_shape(collision_shape)
 		var size: Vector2 = geometry["size"]
-		var tiles: Array[Dictionary] = CapturePlan.plan_face(size, pixels_per_unit, lod_levels, first_level, max_tile)
+		var tiles: Array[Dictionary] = CapturePlan.plan_face(size, pixels_per_unit, lod_levels, min_level_pixels, max_tile)
 		if tiles.is_empty():
 			push_warning("CaptureZone2D: '%s' has no area and was skipped." % collision_shape.name)
 			continue
