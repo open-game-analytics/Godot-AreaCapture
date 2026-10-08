@@ -17,6 +17,7 @@ An `Area2D` whose child `CollisionShape2D`s are the capture boxes. Boxes can be 
 | `lod_levels` | Levels of detail to export (default 4). The finest is `pixels_per_unit`; each further level is half the resolution of the previous one. |
 | `min_level_pixels` | Degraded levels whose whole image would be shorter than this (longest edge, px) are skipped (default 256); the finest level is always exported. |
 | `tile_pixels` | Pixel size of every tile of every level (default 1024). Tiles are anchored at the box's top-left corner; only the last column/row (and a level smaller than one tile) is cropped. |
+| `skip_empty_tiles` | Default on. Tiles in which nothing is drawn (fully transparent) are not saved and are left out of the metadata, so empty parts of a box cost no disk space; a level or box with no drawn tile is not exported at all (a box with the same id from an earlier export is removed from the metadata). The dashboard draws nothing where a tile is missing. |
 | `render_layers` | Visibility layers included in the capture; move e.g. the player to another layer and untick it to leave it out. |
 
 ### Capturing

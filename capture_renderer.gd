@@ -44,3 +44,9 @@ static func render_tile(host: Node, center: Vector2, rotation: float, pixels_per
 	host.remove_child(sub_viewport)
 	sub_viewport.queue_free()
 	return image
+
+
+## True when a rendered tile has nothing to show: every pixel is fully transparent (or there is no image).
+## Only meaningful with a transparent background, which render_tile() always uses.
+static func is_empty_tile(image: Image) -> bool:
+	return image == null or image.is_invisible()

@@ -58,6 +58,10 @@ static var _frozen_tree: SceneTree = null
 ## exported, so no tiny textures. The maximum quality level is always exported. 0 = no limit.
 @export_range(0, 16384) var min_level_pixels: int = 256
 
+## Do not save tiles in which nothing is drawn (fully transparent) and leave them out of the metadata, so
+## empty parts of a box take no disk space. A level or box left without any tile is not exported at all.
+@export var skip_empty_tiles: bool = true
+
 ## Maximum quality: image pixels per world unit of the finest level. The Godot 2D world is measured in
 ## pixels, so 1 is native resolution.
 @export_range(0.1, 64.0, 0.1, "or_greater") var pixels_per_unit: float = 1.0
@@ -142,6 +146,7 @@ func _capture_boxes() -> void:
 	var tile_px: int = clampi(tile_pixels, 64, 16384)
 	var prefix: String = filename if filename != "" else name
 	var boxes: Array = []
+	var empty_ids: Array = [] # boxes that came out completely empty
 	var used_ids: Dictionary = {}
 
 	for child in get_children():
@@ -162,6 +167,7 @@ func _capture_boxes() -> void:
 		var level_images: Dictionary = {} # level -> Array of image entries, in tile order
 		var level_info: Dictionary = {} # level -> {pixels_per_unit, grid, tile_pixels}
 		var failed: bool = false
+		var saved: int = 0
 
 		for tile: Dictionary in tiles:
 			var tile_name: String = "%s_%s_L%d_%dx%d.png" % [id, MetadataWriter.FACE_2D, tile["level"], tile["col"], tile["row"]]
@@ -180,32 +186,47 @@ func _capture_boxes() -> void:
 				failed = true
 				break
 
+			var level: int = tile["level"]
+			if not level_images.has(level):
+				level_images[level] = []
+				level_info[level] = {"pixels_per_unit": tile["pixels_per_unit"], "grid": Vector2i(tile["cols"], tile["rows"]), "tile_pixels": tile["tile_pixels"]}
+
+			if skip_empty_tiles and CaptureRenderer.is_empty_tile(image):
+				# Nothing was drawn here: no PNG, no metadata entry. A tile left by an earlier export would stay unreferenced.
+				if FileAccess.file_exists(save_path):
+					DirAccess.remove_absolute(save_path)
+				continue
+
 			var err: Error = image.save_png(save_path)
 			if err != OK:
 				push_error("CaptureZone2D: Failed to save '%s' (err=%d)" % [save_path, err])
 				failed = true
 				break
 
-			var level: int = tile["level"]
-			if not level_images.has(level):
-				level_images[level] = []
-				level_info[level] = {"pixels_per_unit": tile["pixels_per_unit"], "grid": Vector2i(tile["cols"], tile["rows"]), "tile_pixels": tile["tile_pixels"]}
 			(level_images[level] as Array).append(MetadataWriter.image_entry(tile["col"], tile["row"], tile_name, pixel_size))
+			saved += 1
 
 		if failed:
 			continue
 
 		for level: int in level_images:
+			if (level_images[level] as Array).is_empty():
+				continue # a level without any drawn tile is left out
 			var info: Dictionary = level_info[level]
 			MetadataWriter.add_lod(box, MetadataWriter.FACE_2D, level, info["pixels_per_unit"], info["grid"], level_images[level], info["tile_pixels"])
+		if saved == 0:
+			# The whole box is empty: drop it, and a box with this id from an earlier export too
+			empty_ids.append(id)
+			push_warning("CaptureZone2D: box '%s' is empty (nothing drawn in it) and was not exported." % id)
+			continue
 		boxes.append(box)
-		print("[CaptureZone2D] '%s': saved %d tile(s) for box '%s'" % [name, tiles.size(), id])
+		print("[CaptureZone2D] '%s': saved %d of %d tile(s) for box '%s'" % [name, saved, tiles.size(), id])
 
-	if boxes.is_empty():
+	if boxes.is_empty() and empty_ids.is_empty():
 		push_warning("CaptureZone2D: No valid collision shapes found or all captures failed.")
 		return
 
-	_write_metadata(boxes)
+	_write_metadata(boxes, empty_ids)
 
 
 ## World-space geometry of a child shape as an oriented box: its centre, rotation (radians) and size.
@@ -230,7 +251,7 @@ func _tile_center(geometry: Dictionary, tile: Dictionary) -> Vector2:
 
 
 ## Merge these boxes into the metadata file (zones share it); a legacy or unreadable file is replaced.
-func _write_metadata(boxes: Array) -> void:
+func _write_metadata(boxes: Array, empty_ids: Array = []) -> void:
 	var meta_path: String = output_directory.path_join(metadata_filename)
 	var doc: Dictionary = MetadataWriter.make_document(scenario)
 
@@ -242,6 +263,7 @@ func _write_metadata(boxes: Array) -> void:
 			if scenario != "":
 				doc["scenario"] = scenario
 
+	MetadataWriter.remove_boxes(doc, empty_ids)
 	MetadataWriter.merge_boxes(doc, boxes)
 
 	var meta_file := FileAccess.open(meta_path, FileAccess.WRITE)
