@@ -17,7 +17,7 @@ An `Area2D` whose child `CollisionShape2D`s are the capture boxes. Boxes can be 
 | `lod_levels` | Levels of detail to export (default 4). The finest is `pixels_per_unit`; each further level is half the resolution of the previous one. |
 | `min_level_pixels` | Degraded levels whose whole image would be shorter than this (longest edge, px) are skipped (default 256); the finest level is always exported. |
 | `tile_pixels` | Pixel size of every tile of every level (default 1024). Tiles are anchored at the box's top-left corner; only the last column/row (and a level smaller than one tile) is cropped. |
-| `skip_empty_tiles` | Default on. Tiles in which nothing is drawn (fully transparent) are not saved and are left out of the metadata, so empty parts of a box cost no disk space; a level or box with no drawn tile is not exported at all (a box with the same id from an earlier export is removed from the metadata). The dashboard draws nothing where a tile is missing. |
+| `skip_empty_tiles` | Default on. Tiles in which nothing is drawn (fully transparent) are not saved and are left out of the metadata, so empty parts of a box cost no disk space; a level or box with no drawn tile is not exported at all (a box with the same id from an earlier export is removed from the metadata). A PNG an earlier export left under the name of a tile that is empty now is deleted once the metadata is written. The dashboard draws nothing where a tile is missing. |
 | `render_layers` | Visibility layers included in the capture; move e.g. the player to another layer and untick it to leave it out. |
 
 ### Capturing
@@ -31,7 +31,7 @@ godot --path . -- --capture-areas     # captures all CaptureZone2D nodes, then q
 ### Levels of detail
 
 - **Max quality first:** `pixels_per_unit` is the resolution you want at best; `lod_levels` adds smaller versions below it (4 levels at 1 ppu are 0.125 / 0.25 / 0.5 / 1). Levels are tagged `L0` (coarsest) upward, and every level is cut into tiles of the same pixel size (`tile_pixels`), so a finer level replaces one tile with four and every tile costs the same to load. Levels that would be smaller than `min_level_pixels` are dropped, so small boxes get fewer levels.
-- **Manual detail box:** add a second `CaptureZone2D` with a higher `pixels_per_unit` and a box over the area of interest, using the same `metadata_filename`. Level tags are per box (every box starts at `L0`).
+- **Manual detail box:** add a second `CaptureZone2D` with a higher `pixels_per_unit` and a box over the area of interest, using the same `metadata_filename`. Level tags are per box (every box starts at `L0`, unless `skip_empty_tiles` dropped its coarsest levels because nothing showed at their resolution).
 
 ### Output
 
@@ -48,8 +48,8 @@ Images are named `<id>_Front_L<level>_<col>x<row>.png` (row 0 is the top). The m
 | File | Role |
 |---|---|
 | `capture_plan.gd` | Pure rules: tile grid, LoD levels, tile offsets and pixel sizes. Unit-testable headless. |
-| `capture_metadata_writer.gd` | Builds and serialises schema v2 (y-flip, rounding, merging). |
-| `capture_renderer.gd` | Renders one tile: a `SubViewport` sharing the world with a rotated, zoomed `Camera2D`. |
+| `capture_metadata_writer.gd` | Builds and serialises schema v2 (y-flip, rounding, merging and removing boxes). |
+| `capture_renderer.gd` | Renders one tile: a `SubViewport` sharing the world with a rotated, zoomed `Camera2D`; tells whether a tile is empty. |
 | `capture_zone_2d.gd` | The node: box geometry from shapes, the capture loop, writing the metadata. |
 | `position_tracker.gd`, `trackable_*.gd` | Position reporting (signal only; no event sender yet). |
 

@@ -147,6 +147,7 @@ func _capture_boxes() -> void:
 	var prefix: String = filename if filename != "" else name
 	var boxes: Array = []
 	var empty_ids: Array = [] # boxes that came out completely empty
+	var stale_paths: Array = [] # PNGs an earlier export left under the names of tiles that are empty now
 	var used_ids: Dictionary = {}
 
 	for child in get_children():
@@ -168,6 +169,7 @@ func _capture_boxes() -> void:
 		var level_info: Dictionary = {} # level -> {pixels_per_unit, grid, tile_pixels}
 		var failed: bool = false
 		var saved: int = 0
+		var box_stale: Array = []
 
 		for tile: Dictionary in tiles:
 			var tile_name: String = "%s_%s_L%d_%dx%d.png" % [id, MetadataWriter.FACE_2D, tile["level"], tile["col"], tile["row"]]
@@ -192,9 +194,10 @@ func _capture_boxes() -> void:
 				level_info[level] = {"pixels_per_unit": tile["pixels_per_unit"], "grid": Vector2i(tile["cols"], tile["rows"]), "tile_pixels": tile["tile_pixels"]}
 
 			if skip_empty_tiles and CaptureRenderer.is_empty_tile(image):
-				# Nothing was drawn here: no PNG, no metadata entry. A tile left by an earlier export would stay unreferenced.
+				# Nothing was drawn here: no PNG, no metadata entry. A tile an earlier export left under this name is
+				# deleted only once the new metadata is written, so a failed run never leaves the old file pointing at nothing.
 				if FileAccess.file_exists(save_path):
-					DirAccess.remove_absolute(save_path)
+					box_stale.append(save_path)
 				continue
 
 			var err: Error = image.save_png(save_path)
@@ -208,6 +211,7 @@ func _capture_boxes() -> void:
 
 		if failed:
 			continue
+		stale_paths.append_array(box_stale)
 
 		for level: int in level_images:
 			if (level_images[level] as Array).is_empty():
@@ -226,7 +230,11 @@ func _capture_boxes() -> void:
 		push_warning("CaptureZone2D: No valid collision shapes found or all captures failed.")
 		return
 
-	_write_metadata(boxes, empty_ids)
+	if _write_metadata(boxes, empty_ids):
+		for path: String in stale_paths:
+			DirAccess.remove_absolute(path)
+			if FileAccess.file_exists(path + ".import"):
+				DirAccess.remove_absolute(path + ".import")
 
 
 ## World-space geometry of a child shape as an oriented box: its centre, rotation (radians) and size.
@@ -251,7 +259,8 @@ func _tile_center(geometry: Dictionary, tile: Dictionary) -> Vector2:
 
 
 ## Merge these boxes into the metadata file (zones share it); a legacy or unreadable file is replaced.
-func _write_metadata(boxes: Array, empty_ids: Array = []) -> void:
+## Returns whether the file was written.
+func _write_metadata(boxes: Array, empty_ids: Array = []) -> bool:
 	var meta_path: String = output_directory.path_join(metadata_filename)
 	var doc: Dictionary = MetadataWriter.make_document(scenario)
 
@@ -269,10 +278,11 @@ func _write_metadata(boxes: Array, empty_ids: Array = []) -> void:
 	var meta_file := FileAccess.open(meta_path, FileAccess.WRITE)
 	if meta_file == null:
 		push_error("CaptureZone2D: cannot write '%s' (err=%d)" % [meta_path, FileAccess.get_open_error()])
-		return
+		return false
 	meta_file.store_string(MetadataWriter.to_json(doc))
 	meta_file.close()
 	print("[CaptureZone2D] '%s': metadata saved to '%s'" % [name, meta_path])
+	return true
 
 
 static func _unique_id(base: String, used: Dictionary) -> String:
