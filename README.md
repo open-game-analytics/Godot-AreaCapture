@@ -17,6 +17,7 @@ An `Area2D` whose child `CollisionShape2D`s are the capture boxes. Boxes can be 
 | `min_pixels_per_unit` | Lowest resolution a level of detail may have (default 0 = no floor). Levels start at `pixels_per_unit` and halve until a level's whole image fits in one tile (the overview) or the next level would fall below this; the finest level is always exported. |
 | `extremes_only` | Export only the coarsest (overview) and finest level, a fast preview of the worst and best LoD (default off). Levels keep their real numbers. |
 | `tile_pixels` | Pixel size of every tile of every level (default 1024). Tiles are anchored at the box's top-left corner; only the last column/row (and a level smaller than one tile) is cropped. |
+| `skip_empty_tiles` | Default on. Tiles in which nothing is drawn (fully transparent) are not saved and are left out of the metadata, so empty parts of a box cost no disk space; a level or box with no drawn tile is not exported at all (a box with the same id from an earlier export is removed from the metadata). A PNG an earlier export left under the name of a tile that is empty now is deleted once the metadata is written. The dashboard draws nothing where a tile is missing. |
 | `render_layers` | Visibility layers included in the capture; move e.g. the player to another layer and untick it to leave it out. |
 
 ### Capturing
@@ -47,8 +48,8 @@ Images are named `<id>_Front_L<level>_<col>x<row>.png` (row 0 is the top). The m
 | File | Role |
 |---|---|
 | `capture_plan.gd` | Pure rules: tile grid, LoD levels, tile offsets and pixel sizes. Unit-testable headless. |
-| `capture_metadata_writer.gd` | Builds and serialises schema v2 (y-flip, rounding, merging). |
-| `capture_renderer.gd` | Renders one tile: a `SubViewport` sharing the world with a rotated, zoomed `Camera2D`. |
+| `capture_metadata_writer.gd` | Builds and serialises schema v2 (y-flip, rounding, merging and removing boxes). |
+| `capture_renderer.gd` | Renders one tile: a `SubViewport` sharing the world with a rotated, zoomed `Camera2D`; tells whether a tile is empty. |
 | `capture_zone_2d.gd` | The node: box geometry from shapes, the capture loop, writing the metadata. |
 | `position_tracker.gd`, `trackable_*.gd` | Position reporting (signal only; no event sender yet). |
 

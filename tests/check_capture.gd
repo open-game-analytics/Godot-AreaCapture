@@ -231,6 +231,18 @@ func _init() -> void:
 	Writer.merge_boxes(merged, [{"id": "b", "v": 2}, {"id": "c", "v": 1}])
 	check((merged["boxes"] as Array).size() == 3, "merge keeps others and adds new")
 	check(merged["boxes"][1]["v"] == 2, "merge replaces a box with the same id in place")
+	Writer.remove_boxes(merged, ["a", "zzz"])
+	check((merged["boxes"] as Array).size() == 2 and merged["boxes"][0]["id"] == "b", "remove_boxes drops the named boxes and ignores unknown ids")
+
+	# ── empty tiles ──────────────────────────────────────────────────────
+	var Renderer := preload("res://addons/Godot-AreaCapture/capture_renderer.gd")
+	var blank := Image.create_empty(8, 8, false, Image.FORMAT_RGBA8)
+	check(Renderer.is_empty_tile(blank), "a fully transparent tile is empty")
+	blank.fill(Color(1, 0, 0, 0))
+	check(Renderer.is_empty_tile(blank), "colour with alpha 0 everywhere is still empty")
+	blank.set_pixel(7, 7, Color(0, 0, 0, 0.5))
+	check(not Renderer.is_empty_tile(blank), "one visible pixel makes the tile non-empty")
+	check(Renderer.is_empty_tile(null), "no image counts as empty")
 
 	# ── zone script: geometry and tile centres ───────────────────────────
 	var zone: Area2D = ZoneScript.new()

@@ -80,6 +80,15 @@ static func merge_boxes(doc: Dictionary, boxes: Array) -> void:
 			existing.append(box)
 
 
+## Remove the boxes with these ids from a document (a box that now captures nothing must not linger from an earlier export).
+static func remove_boxes(doc: Dictionary, ids: Array) -> void:
+	var kept: Array = []
+	for box: Dictionary in doc["boxes"]:
+		if not ids.has(box.get("id")):
+			kept.append(box)
+	doc["boxes"] = kept
+
+
 static func to_json(doc: Dictionary) -> String:
 	return JSON.stringify(doc, "\t") + "\n"
 
