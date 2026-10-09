@@ -10,13 +10,10 @@ extends RefCounted
 const DEFAULT_TILE_PIXELS: int = 1024
 
 ## More levels than this (each halves the resolution) would be below any useful size.
-const MAX_LOD_LEVELS: int = 8
+const MAX_LOD_LEVELS: int = 32
 
-## Default number of LoD levels per box.
-const DEFAULT_LOD_LEVELS: int = 4
-
-## Default for the smallest image edge a degraded level may have; smaller levels are dropped.
-const DEFAULT_MIN_LEVEL_PIXELS: int = 256
+## Default lowest resolution (pixels per unit) a level may have; 0 = no floor.
+const DEFAULT_MIN_PIXELS_PER_UNIT: float = 0.0
 
 const _GRID_EPSILON: float = 1e-6
 
@@ -47,29 +44,48 @@ static func grid_for(total_pixels: Vector2i, tile_pixels: int) -> Vector2i:
 
 
 ## Pixels per unit of every LoD level of a box of `size` world units, coarsest first, so the array
-## index is the level tag. The finest level is `max_pixels_per_unit`; each further level halves it.
-## A degraded level whose whole image would be shorter than `min_level_pixels` on its longest edge is
-## dropped; the finest level is always kept.
-static func level_pixels_per_unit(size: Vector2, max_pixels_per_unit: float, level_count: int, min_level_pixels: int) -> Array[float]:
+## index is the level tag. The finest level is `max_pixels_per_unit`; each further level halves it until
+## the whole image fits in a single `tile_pixels` tile (that level is the overview and the last one) or
+## the next level would drop below `min_pixels_per_unit`. The finest level is always kept, so the level
+## count follows from the box size and the resolution range.
+static func level_pixels_per_unit(size: Vector2, max_pixels_per_unit: float, min_pixels_per_unit: float, tile_pixels: int) -> Array[float]:
 	var ppus: Array[float] = []
-	var longest_units: float = maxf(size.x, size.y)
-	for i in clampi(level_count, 1, MAX_LOD_LEVELS):
-		var ppu: float = max_pixels_per_unit / pow(2.0, i)
-		if i > 0 and longest_units * ppu < min_level_pixels:
-			break # only gets smaller from here
+	var finest: Vector2i = finest_pixels(size, max_pixels_per_unit)
+	var tile: int = maxi(1, tile_pixels)
+	for k in MAX_LOD_LEVELS:
+		var ppu: float = max_pixels_per_unit / pow(2.0, k)
+		if k > 0 and ppu < min_pixels_per_unit * (1.0 - 1e-9):
+			break # only gets lower from here
 		ppus.append(ppu)
+		var px: Vector2i = level_pixels(finest, k)
+		if px.x <= tile and px.y <= tile:
+			break # the whole image is one tile
 	ppus.reverse()
 	return ppus
 
 
+## The level tags to export out of a ladder of `level_count` levels: all of them, or with `extremes_only`
+## just the overview (0) and the finest, a quick look at the worst and best LoD. Tags keep their value
+## from the full ladder, so a later full export fills in the gap.
+static func level_tags(level_count: int, extremes_only: bool) -> Array[int]:
+	var tags: Array[int] = []
+	if extremes_only and level_count > 2:
+		tags.append(0)
+		tags.append(level_count - 1)
+	else:
+		for i in level_count:
+			tags.append(i)
+	return tags
+
+
 ## Number of tiles plan_face() would produce, without building them.
-static func count_tiles(size: Vector2, max_pixels_per_unit: float, level_count: int, min_level_pixels: int, tile_pixels: int) -> int:
+static func count_tiles(size: Vector2, max_pixels_per_unit: float, min_pixels_per_unit: float, tile_pixels: int, extremes_only: bool = false) -> int:
 	if max_pixels_per_unit <= 0.0 or tile_pixels < 1:
 		return 0
-	var level_ppus: Array[float] = level_pixels_per_unit(size, max_pixels_per_unit, level_count, min_level_pixels)
+	var level_ppus: Array[float] = level_pixels_per_unit(size, max_pixels_per_unit, min_pixels_per_unit, tile_pixels)
 	var finest: Vector2i = finest_pixels(size, max_pixels_per_unit)
 	var total: int = 0
-	for level in level_ppus.size():
+	for level in level_tags(level_ppus.size(), extremes_only):
 		var grid: Vector2i = grid_for(level_pixels(finest, level_ppus.size() - 1 - level), tile_pixels)
 		total += grid.x * grid.y
 	return total
@@ -78,7 +94,8 @@ static func count_tiles(size: Vector2, max_pixels_per_unit: float, level_count: 
 ## Every tile of every LoD level of a box of `size` world units.
 ##
 ## `max_pixels_per_unit` is the finest level's resolution; see level_pixels_per_unit() for the coarser
-## ones. Levels are tagged from 0 (coarsest) upward, so a higher tag is always more detail.
+## ones. Levels are tagged from 0 (coarsest) upward, so a higher tag is always more detail; with
+## `extremes_only` only the coarsest and finest levels are planned (see level_tags()).
 ## Every tile is `tile_pixels` square and anchored at the box's top-left corner; only the last column/row
 ## (and a level smaller than one tile) is cropped to the box. Adjacent levels differ by a factor of two and
 ## their image sizes are derived from the finest one, so a finer level replaces each tile with four:
@@ -89,15 +106,15 @@ static func count_tiles(size: Vector2, max_pixels_per_unit: float, level_count: 
 ##   tile_size: Vector2   world units covered by this tile
 ##   offset: Vector2      tile centre relative to the box centre: x along the image's right, y along its up
 ##   pixel_size: Vector2i PNG size
-static func plan_face(size: Vector2, max_pixels_per_unit: float, level_count: int, min_level_pixels: int, tile_pixels: int) -> Array[Dictionary]:
+static func plan_face(size: Vector2, max_pixels_per_unit: float, min_pixels_per_unit: float, tile_pixels: int, extremes_only: bool = false) -> Array[Dictionary]:
 	var tiles: Array[Dictionary] = []
 	if max_pixels_per_unit <= 0.0 or tile_pixels < 1 or size.x <= 0.0 or size.y <= 0.0:
 		push_error("CapturePlan: pixels per unit, tile size and box size must be positive.")
 		return tiles
 
-	var level_ppus: Array[float] = level_pixels_per_unit(size, max_pixels_per_unit, level_count, min_level_pixels)
+	var level_ppus: Array[float] = level_pixels_per_unit(size, max_pixels_per_unit, min_pixels_per_unit, tile_pixels)
 	var finest: Vector2i = finest_pixels(size, max_pixels_per_unit)
-	for level in level_ppus.size():
+	for level in level_tags(level_ppus.size(), extremes_only):
 		var ppu: float = level_ppus[level]
 		var total: Vector2i = level_pixels(finest, level_ppus.size() - 1 - level)
 		var grid: Vector2i = grid_for(total, tile_pixels)
