@@ -10,11 +10,12 @@ class_name CaptureZone2D
 ## The game must run with a real renderer for the capture to work (SubViewport rendering needs an
 ## active render loop; --headless has none).
 ##
-## Levels of detail: `pixels_per_unit` is the maximum quality (the finest level); `lod_levels` adds smaller
-## versions below it, each half the resolution of the previous one, and levels whose whole image would be
-## shorter than `min_level_pixels` are dropped. Every level is cut into tiles of one constant size,
-## `tile_pixels`, so a finer level replaces one tile with four and every tile costs the same to load. For a hand-placed detail area inside a bigger box, add a second CaptureZone2D with a
-## higher `pixels_per_unit`.
+## Levels of detail: `pixels_per_unit` is the maximum quality (the finest level). The smaller versions below
+## it are derived: each halves the resolution of the previous one until a level's whole image fits in one
+## tile (the overview) or the next level would drop below `min_pixels_per_unit`. Every level is cut into
+## tiles of one constant size, `tile_pixels`, so a finer level replaces one tile with four and every tile
+## costs the same to load. For a hand-placed detail area inside a bigger box, add a second CaptureZone2D
+## with a higher `pixels_per_unit`.
 ##
 ## The scene tree is paused while capturing so all tiles show the same moment of the game.
 ## See "Capture Metadata v2" in the dashboard docs.
@@ -50,13 +51,14 @@ static var _frozen_tree: SceneTree = null
 
 @export_group("Levels of detail")
 
-## How many levels of detail to export. The finest is pixels_per_unit; each further level is half the
-## resolution of the previous one, so a viewer can load smaller images while zoomed out. 1 = only the max.
-@export_range(1, 8) var lod_levels: int = 4
+## Lowest resolution (pixels per world unit) a level of detail may have: the ladder stops before going
+## below it, even if the box does not fit one tile yet. The maximum quality level is always exported.
+## 0 = no floor.
+@export_range(0.0, 64.0, 0.01, "or_greater") var min_pixels_per_unit: float = 0.0
 
-## Degraded levels whose whole image would be shorter than this (longest edge, in pixels) are not
-## exported, so no tiny textures. The maximum quality level is always exported. 0 = no limit.
-@export_range(0, 16384) var min_level_pixels: int = 256
+## Export only the coarsest (overview) and the finest level, a fast preview of the worst and best LoD.
+## Levels keep their real numbers, so a full export later fills in the ones in between.
+@export var extremes_only: bool = false
 
 ## Maximum quality: image pixels per world unit of the finest level. The Godot 2D world is measured in
 ## pixels, so 1 is native resolution.
@@ -93,7 +95,7 @@ func capture_content(child: Node2D = null) -> Image:
 		return null
 
 	var box: Dictionary = _box_from_shape(collision_shape)
-	var tiles: Array[Dictionary] = CapturePlan.plan_face(box["size"], pixels_per_unit, 1, 0, 1 << 30)
+	var tiles: Array[Dictionary] = CapturePlan.plan_face(box["size"], pixels_per_unit, 0.0, 1 << 30)
 	if tiles.is_empty():
 		push_warning("CaptureZone2D: Capture area is empty or invalid.")
 		return null
@@ -151,7 +153,7 @@ func _capture_boxes() -> void:
 
 		var geometry: Dictionary = _box_from_shape(collision_shape)
 		var size: Vector2 = geometry["size"]
-		var tiles: Array[Dictionary] = CapturePlan.plan_face(size, pixels_per_unit, lod_levels, min_level_pixels, tile_px)
+		var tiles: Array[Dictionary] = CapturePlan.plan_face(size, pixels_per_unit, min_pixels_per_unit, tile_px, extremes_only)
 		if tiles.is_empty():
 			push_warning("CaptureZone2D: '%s' has no area and was skipped." % collision_shape.name)
 			continue

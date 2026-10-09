@@ -14,8 +14,8 @@ An `Area2D` whose child `CollisionShape2D`s are the capture boxes. Boxes can be 
 | `metadata_filename` | Metadata file; zones that share it merge into it, so an overview and its detail zones end up together. |
 | `scenario` | Scenario name stored in the metadata. |
 | `pixels_per_unit` | **Maximum quality**: pixels per world unit of the finest level (Godot 2D units are pixels, so `1` = native). |
-| `lod_levels` | Levels of detail to export (default 4). The finest is `pixels_per_unit`; each further level is half the resolution of the previous one. |
-| `min_level_pixels` | Degraded levels whose whole image would be shorter than this (longest edge, px) are skipped (default 256); the finest level is always exported. |
+| `min_pixels_per_unit` | Lowest resolution a level of detail may have (default 0 = no floor). Levels start at `pixels_per_unit` and halve until a level's whole image fits in one tile (the overview) or the next level would fall below this; the finest level is always exported. |
+| `extremes_only` | Export only the coarsest (overview) and finest level, a fast preview of the worst and best LoD (default off). Levels keep their real numbers. |
 | `tile_pixels` | Pixel size of every tile of every level (default 1024). Tiles are anchored at the box's top-left corner; only the last column/row (and a level smaller than one tile) is cropped. |
 | `render_layers` | Visibility layers included in the capture; move e.g. the player to another layer and untick it to leave it out. |
 
@@ -29,7 +29,7 @@ godot --path . -- --capture-areas     # captures all CaptureZone2D nodes, then q
 
 ### Levels of detail
 
-- **Max quality first:** `pixels_per_unit` is the resolution you want at best; `lod_levels` adds smaller versions below it (4 levels at 1 ppu are 0.125 / 0.25 / 0.5 / 1). Levels are tagged `L0` (coarsest) upward, and every level is cut into tiles of the same pixel size (`tile_pixels`), so a finer level replaces one tile with four and every tile costs the same to load. Levels that would be smaller than `min_level_pixels` are dropped, so small boxes get fewer levels.
+- **Max quality first:** `pixels_per_unit` is the resolution you want at best; the smaller versions below it are derived: each level halves the resolution until the whole box fits in one tile (a 2000 x 1000 px box at 1 ppu with 512 px tiles gets 0.25 / 0.5 / 1). Levels are tagged `L0` (coarsest) upward, and every level is cut into tiles of the same pixel size (`tile_pixels`), so a finer level replaces one tile with four and every tile costs the same to load. `min_pixels_per_unit` sets a floor for the ladder, and small boxes get fewer levels.
 - **Manual detail box:** add a second `CaptureZone2D` with a higher `pixels_per_unit` and a box over the area of interest, using the same `metadata_filename`. Level tags are per box (every box starts at `L0`).
 
 ### Output

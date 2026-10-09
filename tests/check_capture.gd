@@ -43,9 +43,9 @@ func _init() -> void:
 	check(Plan.finest_pixels(Vector2(10.01, 1.0), 10.0) == Vector2i(101, 10), "finest size is rounded up so the image covers the box")
 	check(Plan.level_pixels(Vector2i(801, 400), 1) == Vector2i(401, 200), "one level down: halved and rounded up")
 	check(Plan.level_pixels(Vector2i(801, 400), 2) == Vector2i(201, 100), "two levels down: still derived from the finest")
-	check(Plan.count_tiles(Vector2(100, 50), 8.0, 3, 0, 200) == 11, "Overview has 1+2+8 tiles")
+	check(Plan.count_tiles(Vector2(100, 50), 8.0, 0.0, 200) == 11, "Overview has 1+2+8 tiles")
 
-	var detail: Array[Dictionary] = Plan.plan_face(Vector2(30, 15), 16.0, 1, 0, 200)
+	var detail: Array[Dictionary] = Plan.plan_face(Vector2(30, 15), 16.0, 16.0, 200)
 	check(detail.size() == 6, "Detail 30x15 @16 = 3x2 tiles")
 	check(detail[0]["pixel_size"] == Vector2i(200, 200), "Detail tile 0,0 is a full 200x200 px tile")
 	check(detail[2]["pixel_size"] == Vector2i(80, 200) and detail[3]["pixel_size"] == Vector2i(200, 40), "...the last column is cropped to 80 px, the last row to 40 px")
@@ -53,46 +53,71 @@ func _init() -> void:
 	var corner: Dictionary = detail[5] # column 2, row 1: 5 x 2.5 units at the box's bottom-right
 	check(near(corner["tile_size"].x, 5.0) and near(corner["tile_size"].y, 2.5), "cropped tile covers 5 x 2.5 units")
 	check(near(corner["offset"].x, 12.5) and near(corner["offset"].y, -6.25), "cropped corner tile centre (12.5, -6.25)")
-	var small: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 4.0, 1, 0, 1024)  # 80x40 px: smaller than one tile
+	var small: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 4.0, 4.0, 1024)  # 80x40 px: smaller than one tile
 	check(small.size() == 1 and small[0]["pixel_size"] == Vector2i(80, 40) and small[0]["tile_pixels"] == 1024, "a level smaller than one tile is one cropped tile")
 	check(detail[0]["level"] == 0, "a single level is tagged 0 (tags are per box)")
 
-	var quad: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 10.0, 1, 0, 50)  # 200x100 px, max 50 => 4x2
+	var quad: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 10.0, 10.0, 50)  # 200x100 px, max 50 => 4x2
 	check(quad.size() == 8, "20x10 @10 max50 = 4x2")
 	check(near(quad[0]["offset"].x, -7.5) and near(quad[0]["offset"].y, 2.5), "tile 0,0 is top-left (u=-7.5, v=2.5)")
 
-	check(Plan.plan_face(Vector2(1, 1), 0.0, 1, 0, 4096).is_empty(), "ppu 0 => no tiles")
-	var clamped: Array[Dictionary] = Plan.plan_face(Vector2(1, 1), 100.0, 99, 0, 4096)
-	var top_level: int = 0
-	for t in clamped:
-		top_level = maxi(top_level, t["level"])
-	check(top_level == Plan.MAX_LOD_LEVELS - 1, "level count clamped")
-	var big: Array[Dictionary] = Plan.plan_face(Vector2(1000, 1000), 100.0, 1, 0, 4096)
+	check(Plan.plan_face(Vector2(1, 1), 0.0, 0.0, 4096).is_empty(), "ppu 0 => no tiles")
+	var tiny_tiles: int = Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 0.0, 1).size()
+	check(tiny_tiles > 1 and tiny_tiles <= Plan.MAX_LOD_LEVELS, "1 px tiles: the ladder still terminates within MAX_LOD_LEVELS")
+	var big: Array[Dictionary] = Plan.plan_face(Vector2(1000, 1000), 100.0, 100.0, 4096)
 	check(big.size() == 625, "huge box is tiled 25x25 instead of failing")
 
-	# ── LoD ladder: ppu is the max quality, levels degrade down from it ──
-	var ladder: Array[float] = Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 4, 0)
-	check(same_ppus(ladder, [12.5, 25.0, 50.0, 100.0]), "4 levels @100 => 12.5/25/50/100 coarsest first (got %s)" % str(ladder))
-	var ladder_tiles: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 100.0, 4, 0, 4096)
+	# ── LoD ladder: max ppu halves until the whole box fits one tile ──
+	# 20x10 units @100 ppu = 2000x1000 px; with 512 px tiles the longest edge is 2000/1000/500 px at 100/50/25 ppu
+	var ladder: Array[float] = Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 0.0, 512)
+	check(same_ppus(ladder, [25.0, 50.0, 100.0]), "halves until the whole box fits one tile => 25/50/100 coarsest first (got %s)" % str(ladder))
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 0.0, 500), [25.0, 50.0, 100.0]), "a level exactly the tile size fits and is the overview")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 0.0, 499), [12.5, 25.0, 50.0, 100.0]), "one px too big => one more level")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(0.5, 0.5), 100.0, 0.0, 1024), [100.0]), "a box that fits one tile at max ppu has a single level")
+	var ladder_tiles: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 100.0, 0.0, 512)
 	var level_ppu: Dictionary = {}
+	var level_count: Dictionary = {}
 	var top_ppu: float = 0.0
 	for t in ladder_tiles:
 		level_ppu[t["level"]] = t["pixels_per_unit"]
+		level_count[t["level"]] = level_count.get(t["level"], 0) + 1
 		top_ppu = maxf(top_ppu, t["pixels_per_unit"])
-	check(level_ppu.size() == 4 and near(level_ppu[0], 12.5) and near(level_ppu[3], 100.0), "tags 0..3, L0 coarsest, top tag = max ppu")
+	check(level_ppu.size() == 3 and near(level_ppu[0], 25.0) and near(level_ppu[2], 100.0), "tags 0..2, L0 coarsest, top tag = max ppu")
+	check(level_count[0] == 1, "the overview is a single tile")
 	check(top_ppu <= 100.0, "no level is rendered above the requested ppu")
-	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 1.0, 1, 0), [1.0]), "single level = only the max")
-	# min pixels: longest edge 20 units => 2000/1000/500/250 px at 100/50/25/12.5 ppu
-	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 4, 256), [25.0, 50.0, 100.0]), "250 px level dropped at min 256")
-	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 4, 250), [12.5, 25.0, 50.0, 100.0]), "level exactly at the min is kept")
-	check(same_ppus(Plan.level_pixels_per_unit(Vector2(0.5, 0.5), 100.0, 4, 256), [100.0]), "max level kept even when below the min")
-	var dropped: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 100.0, 4, 256, 4096)
-	var dropped_top: int = 0
-	for t in dropped:
-		dropped_top = maxi(dropped_top, t["level"])
-	check(dropped_top == 2, "tags renumbered from 0 after dropping")
-	check(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 99, 0).size() == Plan.MAX_LOD_LEVELS, "level count clamped to MAX_LOD_LEVELS")
-	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 0, 0), [100.0]), "level count < 1 treated as 1")
+
+	# min ppu: the ladder never goes below it, even if the box does not fit one tile yet; the max level is always kept
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 50.0, 512), [50.0, 100.0]), "min 50 stops the ladder at 50")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 40.0, 512), [50.0, 100.0]), "min between two levels drops the lower one")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 25.0, 512), [25.0, 50.0, 100.0]), "level exactly at the min is kept")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 100.0, 512), [100.0]), "min = max => only the max level")
+	check(same_ppus(Plan.level_pixels_per_unit(Vector2(20, 10), 100.0, 150.0, 512), [100.0]), "min above max still keeps the max level")
+
+	# overview + best only: the coarsest and finest level, with their real tags
+	check(str(Plan.level_tags(4, true)) == "[0, 3]", "extremes of 4 levels")
+	check(str(Plan.level_tags(3, true)) == "[0, 2]", "extremes of 3 levels")
+	check(str(Plan.level_tags(2, true)) == "[0, 1]", "2 levels are already the extremes")
+	check(str(Plan.level_tags(1, true)) == "[0]", "1 level stays")
+	check(str(Plan.level_tags(4, false)) == "[0, 1, 2, 3]", "all levels")
+	var full: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 100.0, 0.0, 250)  # 4 levels
+	var preview: Array[Dictionary] = Plan.plan_face(Vector2(20, 10), 100.0, 0.0, 250, true)
+	var preview_levels: Dictionary = {}
+	var in_full: bool = true
+	var expected_preview: int = 0
+	for t in full:
+		if t["level"] == 0 or t["level"] == 3:
+			expected_preview += 1
+	for p in preview:
+		preview_levels[p["level"]] = true
+		var found: bool = false
+		for f in full:
+			if f["level"] == p["level"] and f["col"] == p["col"] and f["row"] == p["row"] and f["pixels_per_unit"] == p["pixels_per_unit"] and f["offset"] == p["offset"]:
+				found = true
+				break
+		in_full = in_full and found
+	check(preview_levels.keys() == [0, 3], "preview keeps L0 and the finest, tags unchanged (got %s)" % str(preview_levels.keys()))
+	check(in_full, "every preview tile is identical to the same tile of the full plan")
+	check(preview.size() == expected_preview, "preview = exactly the L0 and finest tiles")
 
 	# Constant tile size: every tile but the last column/row is exactly tile_pixels, and every tile lies inside
 	# the tile (col/2, row/2) of the level below it
@@ -104,7 +129,7 @@ func _init() -> void:
 		var nsize := Vector2(nest_rng.randf_range(1.0, 150.0), nest_rng.randf_range(1.0, 150.0))
 		var nppu: float = nest_rng.randf_range(1.0, 30.0)
 		var ntile: int = [64, 200, 512][nest_rng.randi() % 3]
-		var ntiles: Array[Dictionary] = Plan.plan_face(nsize, nppu, nest_rng.randi_range(2, 5), 0, ntile)
+		var ntiles: Array[Dictionary] = Plan.plan_face(nsize, nppu, 0.0, ntile)
 		var lookup: Dictionary = {}
 		for t: Dictionary in ntiles:
 			lookup[Vector3i(t["level"], t["col"], t["row"])] = t
@@ -135,10 +160,10 @@ func _init() -> void:
 	for n in 1000:
 		var size := Vector2(rng.randf_range(0.1, 40.0), rng.randf_range(0.1, 40.0))
 		var ppu: float = rng.randf_range(0.5, 20.0)
-		var levels: int = rng.randi_range(1, 3)
 		var max_tile: int = [200, 512, 4096, 8192][rng.randi() % 4]
-		var min_px: int = [0, 64, 256, 1000][rng.randi() % 4]
-		if Plan.count_tiles(size, ppu, levels, min_px, max_tile) != Plan.plan_face(size, ppu, levels, min_px, max_tile).size():
+		var min_ppu: float = [0.0, ppu / 8.0, ppu / 2.0, ppu, ppu * 2.0][rng.randi() % 5]
+		var extremes: bool = rng.randi() % 2 == 0
+		if Plan.count_tiles(size, ppu, min_ppu, max_tile, extremes) != Plan.plan_face(size, ppu, min_ppu, max_tile, extremes).size():
 			mismatches += 1
 	check(mismatches == 0, "count_tiles == plan_face size (mismatches=%d)" % mismatches)
 
@@ -158,16 +183,16 @@ func _init() -> void:
 	check(demo.get("schema_version") == 2, "demo loads")
 	# same inputs generate-demo.mjs used, expressed the Godot way (y down, clockwise rotation)
 	var specs: Dictionary = {
-		"Overview": {"pos": Vector2(0, 0), "rot": 0.0, "size": Vector2(100, 50), "levels": 3, "tag_offset": 0, "max_ppu": 8.0},
-		"Detail": {"pos": Vector2(20, -10), "rot": -deg_to_rad(30.0), "size": Vector2(30, 15), "levels": 1, "tag_offset": 3, "max_ppu": 16.0},
-		"Corner": {"pos": Vector2(-30, 10), "rot": 0.0, "size": Vector2(20, 10), "levels": 1, "tag_offset": 2, "max_ppu": 8.0},
+		"Overview": {"pos": Vector2(0, 0), "rot": 0.0, "size": Vector2(100, 50), "min_ppu": 0.0, "tag_offset": 0, "max_ppu": 8.0},
+		"Detail": {"pos": Vector2(20, -10), "rot": -deg_to_rad(30.0), "size": Vector2(30, 15), "min_ppu": 16.0, "tag_offset": 3, "max_ppu": 16.0},
+		"Corner": {"pos": Vector2(-30, 10), "rot": 0.0, "size": Vector2(20, 10), "min_ppu": 8.0, "tag_offset": 2, "max_ppu": 8.0},
 	}
 	var doc: Dictionary = Writer.make_document("lod-demo")
 	for demo_box: Dictionary in demo["boxes"]:
 		var id: String = demo_box["id"]
 		var s: Dictionary = specs[id]
 		var built: Dictionary = Writer.make_box(id, s["pos"], s["rot"], s["size"])
-		var tiles: Array[Dictionary] = Plan.plan_face(s["size"], s["max_ppu"], s["levels"], 0, 200)
+		var tiles: Array[Dictionary] = Plan.plan_face(s["size"], s["max_ppu"], s["min_ppu"], 200)
 		# The planner tags levels per box from 0; the fixture gives hand-placed detail boxes a higher global tag,
 		# which the exporters no longer write, so it is added here to keep comparing grids and pixel sizes exactly.
 		var by_level: Dictionary = {}
