@@ -1,14 +1,13 @@
+@tool
 extends Area2D
 class_name CaptureZone2D
 
 ## Provides free-form capture boxes (one per child CollisionShape2D) that export PNG tiles of the
-## running scene, at several levels of detail, plus a metadata JSON (schema v2) the OGA dashboard reads.
+## scene, at several levels of detail, plus a metadata JSON (schema v2) the OGA dashboard reads.
 ##
-## Boxes can be placed, sized and rotated freely and may overlap. Trigger a capture by starting the
-## game with `recapture = true`, or from the command line (nothing is saved into the scene):
-##     godot --path <project> -- --capture-areas
-## The game must run with a real renderer for the capture to work (SubViewport rendering needs an
-## active render loop; --headless has none).
+## Boxes can be placed, sized and rotated freely and may overlap. Capture from the editor: select the
+## zone and press "Capture areas" in the Inspector. Nothing is saved into the scene, and the game does
+## not have to run. The scene is drawn as the editor holds it, so it needs a real renderer (--headless has none).
 ##
 ## Levels of detail: `pixels_per_unit` is the maximum quality (the finest level). The smaller versions below
 ## it are derived: each halves the resolution of the previous one until a level's whole image fits in one
@@ -17,24 +16,25 @@ class_name CaptureZone2D
 ## costs the same to load. For a hand-placed detail area inside a bigger box, add a second CaptureZone2D
 ## with a higher `pixels_per_unit`.
 ##
-## The scene tree is paused while capturing so all tiles show the same moment of the game.
 ## See "Capture Metadata v2" in the dashboard docs.
 
 const CapturePlan := preload("capture_plan.gd")
 const CaptureRenderer := preload("capture_renderer.gd")
 const MetadataWriter := preload("capture_metadata_writer.gd")
 
-const _CLI_ARG: String = "--capture-areas"
+## Captures every box of this zone (the "Capture areas" button in the Inspector).
+@export_tool_button("Capture areas", "Camera2D") var capture_action: Callable = capture_in_editor
 
-## Zones capturing right now (they run concurrently when several start with the game), and the scene
-## tree's paused state from before the first of them froze it.
-static var _freeze_count: int = 0
-static var _paused_before: bool = false
-static var _frozen_tree: SceneTree = null
+## Node classes that draw an outline or gizmo in the editor but nothing in a running game. The editor draws
+## them into the same world as the scene, so they are hidden while capturing.
+const _EDITOR_DRAWN_CLASSES: PackedStringArray = [
+	"CollisionShape2D", "CollisionPolygon2D", "Marker2D", "Camera2D", "RayCast2D", "ShapeCast2D",
+	"Joint2D", "LightOccluder2D", "VisibleOnScreenNotifier2D", "Path2D", "Skeleton2D", "Bone2D",
+	"NavigationRegion2D", "NavigationLink2D", "NavigationObstacle2D",
+]
 
-## When true, triggers a capture on the next game start. (Set back to false after capturing: the
-## running game cannot save the change into the scene.)
-@export var recapture: bool = false
+## True while a capture of this zone is running, so a second press of the button does nothing.
+var _capturing: bool = false
 
 ## The directory where the captured images and the metadata file will be saved.
 @export_dir var output_directory: String = "res://export/capture/"
@@ -80,15 +80,6 @@ static var _frozen_tree: SceneTree = null
 @export_flags_2d_render var render_layers: int = 0xFFFFF
 
 
-func _ready() -> void:
-	var from_command_line: bool = _CLI_ARG in OS.get_cmdline_user_args()
-	if recapture or from_command_line:
-		await _run_capture()
-		# Zones capture concurrently: only the last one to finish may end the game
-		if from_command_line and _freeze_count == 0:
-			get_tree().quit()
-
-
 ## Captures one child collision shape as a single image at the first level's resolution (no tiling).
 ## Kept for scripts that only need one Image; the export uses render_tile() per planned tile.
 ## Returns an Image or null if failed.
@@ -109,34 +100,45 @@ func capture_content(child: Node2D = null) -> Image:
 
 
 ## Captures every child CollisionShape2D as a box (all levels, all tiles) and writes the images and
-## the metadata JSON. Runs when the game starts with recapture=true or --capture-areas. The scene tree
-## is paused meanwhile, so every tile of every level shows the same moment and neighbouring tiles line up.
-func _run_capture() -> void:
-	recapture = false
-	await _freeze_time()
+## the metadata JSON, then has the editor pick up the new files. Only works in the editor: the scene
+## stands still there, so every tile of every level shows the same state and neighbouring tiles line up.
+func capture_in_editor() -> void:
+	if not Engine.is_editor_hint():
+		push_error("CaptureZone2D: capturing works only in the editor (select the zone and press 'Capture areas').")
+		return
+	if _capturing or not is_inside_tree():
+		return
+	_capturing = true
+	var hidden: Array[CanvasItem] = _hide_editor_drawing(owner if owner != null else self)
 	await _capture_boxes()
-	_unfreeze_time()
+	for item: CanvasItem in hidden:
+		if is_instance_valid(item):
+			RenderingServer.canvas_item_set_visible(item.get_canvas_item(), item.visible)
+	_capturing = false
+	# Have the editor import the new PNGs. (Looked up by name: EditorInterface does not exist in an exported game.)
+	if Engine.has_singleton("EditorInterface"):
+		var editor_interface: Object = Engine.get_singleton("EditorInterface")
+		editor_interface.get_resource_filesystem().scan()
 
 
-## Pauses the scene tree (once, however many zones capture at the same time) and lets the frame settle.
-## Nodes with process_mode ALWAYS/DISABLED are not affected, and shader TIME keeps running.
-func _freeze_time() -> void:
-	var tree: SceneTree = get_tree()
-	if _freeze_count == 0:
-		_frozen_tree = tree
-		_paused_before = tree.paused
-		tree.paused = true
-	_freeze_count += 1
-	await tree.process_frame
-
-
-## Undoes one _freeze_time(); the last zone to finish restores the tree's previous paused state.
-func _unfreeze_time() -> void:
-	_freeze_count -= 1
-	if _freeze_count == 0 and is_instance_valid(_frozen_tree):
-		_frozen_tree.paused = _paused_before
-	if _freeze_count == 0:
-		_frozen_tree = null
+## Hides everything below `root` that only draws itself in the editor (collision shapes, markers, cameras...),
+## so it does not end up in the map; a running game does not show them either. The items are hidden in the
+## rendering server only, the nodes' `visible` is untouched. Returns the hidden items, to be shown again.
+func _hide_editor_drawing(root: Node) -> Array[CanvasItem]:
+	var hidden: Array[CanvasItem] = []
+	var pending: Array[Node] = [root]
+	while not pending.is_empty():
+		var node: Node = pending.pop_back()
+		pending.append_array(node.get_children())
+		var item := node as CanvasItem
+		if item == null:
+			continue
+		for editor_class: String in _EDITOR_DRAWN_CLASSES:
+			if item.is_class(editor_class):
+				RenderingServer.canvas_item_set_visible(item.get_canvas_item(), false)
+				hidden.append(item)
+				break
+	return hidden
 
 
 func _capture_boxes() -> void:
