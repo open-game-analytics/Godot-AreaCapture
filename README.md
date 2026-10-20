@@ -1,6 +1,6 @@
 # Godot-AreaCapture
 
-Godot 4 addon that captures free-form areas of a running 2D scene as PNG maps — at several levels of detail, split into tiles — plus a JSON metadata file the OGA dashboard reads to draw position heatmaps over the map. It is the Godot counterpart of the Unity `Unity-AreaCapture` package and writes the same format ("Capture Metadata v2").
+Godot 4 addon that captures free-form areas of a 2D scene, from the editor, as PNG maps — at several levels of detail, split into tiles — plus a JSON metadata file the OGA dashboard reads to draw position heatmaps over the map. It is the Godot counterpart of the Unity `Unity-AreaCapture` package and writes the same format ("Capture Metadata v2").
 
 ## CaptureZone2D
 
@@ -8,7 +8,6 @@ An `Area2D` whose child `CollisionShape2D`s are the capture boxes. Boxes can be 
 
 | Property | Meaning |
 |---|---|
-| `recapture` | Capture when the game starts. Not saved back into the scene, so prefer the command line below. |
 | `output_directory` | Where the PNGs and the metadata go (`res://export/capture/`). |
 | `filename` | Prefix of box ids and image names: `<filename>_<shape name>`. |
 | `metadata_filename` | Metadata file; zones that share it merge into it, so an overview and its detail zones end up together. |
@@ -22,11 +21,21 @@ An `Area2D` whose child `CollisionShape2D`s are the capture boxes. Boxes can be 
 
 ### Capturing
 
-The game must run with a real renderer (`--headless` has none). While capturing, the scene tree is paused so all tiles show the same moment of the game (nodes with `process_mode` `Always`/`Disabled` and shader `TIME` are not affected). From the command line, nothing is written into the scene:
+Select a `CaptureZone2D` in the scene tree and press **Capture areas** in the Inspector. The capture runs in the editor, like Unity's Area Capture: the game does not have to run, nothing is written into the scene, and the editor imports the new PNGs afterwards. It needs a real renderer, so it does not work from `--headless`.
 
-```bash
-godot --path . -- --capture-areas     # captures all CaptureZone2D nodes, then quits
-```
+The scene is drawn as the editor holds it, so it stands still and every tile shows the same state. Things that exist only while the game runs (spawned nodes, generated levels, a background that follows the game camera) are not in the map. Nodes that draw themselves only in the editor (collision shapes, markers, cameras, occluders, paths, navigation, joints, bones) are hidden during the capture; a custom `@tool` script that draws a gizmo is not, so give it a visibility layer and untick that layer in `render_layers`.
+
+#### Where it works and where not
+
+Each tile is drawn by a `SubViewport` that shares the scene's 2D world. Tested with Godot 4.7 (GL Compatibility, software GL), with a scene of coloured squares moved to different positions:
+
+| How the view is placed | In the editor | In the running game |
+|---|---|---|
+| `Camera2D` in the `SubViewport`, the `SubViewport` under a node of the edited scene | **no effect:** every tile shows the origin, whatever the camera position, rotation or zoom | works |
+| `Camera2D` in the `SubViewport`, the `SubViewport` under an editor plugin node | works | works |
+| `SubViewport.canvas_transform` set directly (used here) | works | works, and pixel-identical to the `Camera2D` |
+
+A zone is a node of the edited scene, so the first row is the case that matters and the reason the renderer sets `canvas_transform` instead of using a camera. `capture_renderer.gd` has `view_transform()` for it.
 
 ### Levels of detail
 
@@ -49,7 +58,7 @@ Images are named `<id>_Front_L<level>_<col>x<row>.png` (row 0 is the top). The m
 |---|---|
 | `capture_plan.gd` | Pure rules: tile grid, LoD levels, tile offsets and pixel sizes. Unit-testable headless. |
 | `capture_metadata_writer.gd` | Builds and serialises schema v2 (y-flip, rounding, merging and removing boxes). |
-| `capture_renderer.gd` | Renders one tile: a `SubViewport` sharing the world with a rotated, zoomed `Camera2D`; tells whether a tile is empty. |
+| `capture_renderer.gd` | Renders one tile: a `SubViewport` sharing the world, its `canvas_transform` set from the tile centre, rotation and zoom (not a `Camera2D`, see below); tells whether a tile is empty. |
 | `capture_zone_2d.gd` | The node: box geometry from shapes, the capture loop, writing the metadata. |
 | `position_tracker.gd`, `trackable_*.gd` | Position reporting (signal only; no event sender yet). |
 

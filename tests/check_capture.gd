@@ -244,6 +244,18 @@ func _init() -> void:
 	check(not Renderer.is_empty_tile(blank), "one visible pixel makes the tile non-empty")
 	check(Renderer.is_empty_tile(null), "no image counts as empty")
 
+	# ── view transform (replaces a Camera2D, see capture_renderer.gd) ────
+	var view: Transform2D = Renderer.view_transform(Vector2(100, 50), 0.0, 2.0, Vector2i(64, 32))
+	var at_centre: Vector2 = view * Vector2(100, 50)
+	check(near(at_centre.x, 32.0) and near(at_centre.y, 16.0), "the tile centre lands in the middle of the image (got %s)" % str(at_centre))
+	var one_right: Vector2 = view * Vector2(101, 50) - at_centre
+	check(near(one_right.x, 2.0) and near(one_right.y, 0.0), "one world unit to the right is pixels_per_unit pixels right (got %s)" % str(one_right))
+	var turned: Transform2D = Renderer.view_transform(Vector2(100, 100), PI / 2.0, 1.0, Vector2i(10, 10))
+	var along_box_x: Vector2 = turned * Vector2(100, 101) - turned * Vector2(100, 100)
+	check(near(along_box_x.x, 1.0) and near(along_box_x.y, 0.0), "a box turned 90° clockwise: its own x axis (world +y) points right in the image (got %s)" % str(along_box_x))
+	var turned_centre: Vector2 = turned * Vector2(100, 100)
+	check(near(turned_centre.x, 5.0) and near(turned_centre.y, 5.0), "the centre stays in the middle when turned")
+
 	# ── zone script: geometry and tile centres ───────────────────────────
 	var zone: Area2D = ZoneScript.new()
 	root.add_child(zone)
